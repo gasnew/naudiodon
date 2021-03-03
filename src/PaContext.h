@@ -44,13 +44,14 @@ public:
   std::shared_ptr<Chunk> pullInChunk(uint32_t numBytes, bool &finished);
   void pushOutChunk(std::shared_ptr<Chunk> chunk);
 
-  void checkStatus(uint32_t statusFlags);
+  std::string checkStatus(uint32_t statusFlags);
+  bool underflowed(uint32_t statusFlags);
   bool getErrStr(std::string& errStr, bool isInput);
 
   void quit();
 
   bool readPaBuffer(const void *srcBuf, uint32_t frameCount, double inTimestamp);
-  bool fillPaBuffer(void *dstBuf, uint32_t frameCount);
+  bool fillPaBuffer(void *dstBuf, uint32_t frameCount, double msToSkip);
 
   double getCurTime() const;
   double getInLatency() const { return mInLatency; }
@@ -68,10 +69,10 @@ private:
   uint32_t fillBuffer(uint8_t *buf, uint32_t numBytes,
                       double &timeStamp,
                       std::shared_ptr<Chunks> chunks,
-                      bool &finished, bool isInput);
+                      bool &finished, bool isInput, uint32_t bytesToSkip);
 
-  void setParams(napi_env env, bool isInput, 
-                 std::shared_ptr<AudioOptions> options, 
+  void setParams(napi_env env, bool isInput,
+                 std::shared_ptr<AudioOptions> options,
                  PaStreamParameters &params, double &sampleRate);
 };
 
