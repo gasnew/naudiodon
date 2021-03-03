@@ -21,23 +21,43 @@
 
 namespace streampunk {
 
-int PaCallback(const void *input, void *output, unsigned long frameCount, 
-               const PaStreamCallbackTimeInfo *timeInfo, 
+double timeDeltaMs = 0.0;
+double prevTime = 0.0;
+
+int PaCallback(const void *input, void *output, unsigned long frameCount,
+               const PaStreamCallbackTimeInfo *timeInfo,
                PaStreamCallbackFlags statusFlags, void *userData) {
   PaContext *paContext = (PaContext *)userData;
   double inTimestamp = timeInfo->inputBufferAdcTime > 0.0 ?
     timeInfo->inputBufferAdcTime :
     paContext->getCurTime() - paContext->getInLatency(); // approximation for timestamp of first sample
-  double outTimestamp = timeInfo->outputBufferDacTime;
+
   paContext->checkStatus(statusFlags);
+
+  double currentTime = paContext->getCurTime();
+  double samplesMs = frameCount / 1.0 / 48.0;
+  double actualMs = (currentTime - prevTime) * 1000.0;
+  double msToSkip = 0;
+  // We cannot rely on the underflow flag--sometimes it is not triggered
+  // correctly :(
+  if (timeDeltaMs > samplesMs * 3) {
+    // We underflowed! Let's skip all of the milliseconds we were waiting for
+    // more data (minus the ms we're buffering this loop iteration).
+    msToSkip = timeDeltaMs - samplesMs;
+    timeDeltaMs -= msToSkip;
+  }
+
+  timeDeltaMs += actualMs - samplesMs;
+  prevTime = currentTime;
+
   // printf("PaCallback output %p, frameCount %d\n", output, frameCount);
   int inRetCode = paContext->hasInput() && paContext->readPaBuffer(input, frameCount, inTimestamp) ? paContinue : paComplete;
-  int outRetCode = paContext->hasOutput() && paContext->fillPaBuffer(output, frameCount) ? paContinue : paComplete;
+  int outRetCode = paContext->hasOutput() && paContext->fillPaBuffer(output, frameCount, msToSkip) ? paContinue : paComplete;
   return ((inRetCode == paComplete) && (outRetCode == paComplete)) ? paComplete : paContinue;
 }
 
 PaContext::PaContext(napi_env env, napi_value inOptions, napi_value outOptions)
-  : mInOptions(checkOptions(env, inOptions) ? std::make_shared<AudioOptions>(env, inOptions) : std::shared_ptr<AudioOptions>()), 
+  : mInOptions(checkOptions(env, inOptions) ? std::make_shared<AudioOptions>(env, inOptions) : std::shared_ptr<AudioOptions>()),
     mOutOptions(checkOptions(env, outOptions) ? std::make_shared<AudioOptions>(env, outOptions) : std::shared_ptr<AudioOptions>()),
     mInChunks(new Chunks(mInOptions ? mInOptions->maxQueue() : 0)),
     mOutChunks(new Chunks(mOutOptions ? mOutOptions->maxQueue() : 0)),
@@ -59,7 +79,7 @@ PaContext::PaContext(napi_env env, napi_value inOptions, napi_value outOptions)
       (mInOptions->sampleRate() != mOutOptions->sampleRate())) {
     napi_throw_error(env, nullptr, "Input and Output sample rates must match");
     return;
-  }    
+  }
 
   printf("%s\n", Pa_GetVersionInfo()->versionText);
   if (mInOptions)
@@ -110,6 +130,10 @@ PaContext::PaContext(napi_env env, napi_value inOptions, napi_value outOptions)
 }
 
 void PaContext::start(napi_env env) {
+  // TODO(gnewman): Get this value from a parameter instead when we
+  // instantiate the stream so we can correct for however long it takes for
+  // Cedar to tell us to begin playback before we actually do
+  prevTime = this->getCurTime();
   PaError errCode = Pa_StartStream(mStream);
   if (errCode != paNoError) {
     std::string err = std::string("Could not start stream: ") + Pa_GetErrorText(errCode);
@@ -131,7 +155,7 @@ std::shared_ptr<Chunk> PaContext::pullInChunk(uint32_t numBytes, bool &finished)
   std::shared_ptr<Memory> result = Memory::makeNew(numBytes);
   finished = false;
   double timeStamp = 0.0;
-  uint32_t bytesRead = fillBuffer(result->buf(), numBytes, timeStamp, mInChunks, finished, /*isInput*/true);
+  uint32_t bytesRead = fillBuffer(result->buf(), numBytes, timeStamp, mInChunks, finished, /*isInput*/true, 0);
   if (bytesRead != numBytes) {
     if (0 == bytesRead)
       result = std::shared_ptr<Memory>();
@@ -149,7 +173,7 @@ void PaContext::pushOutChunk(std::shared_ptr<Chunk> chunk) {
   mOutChunks->push(chunk);
 }
 
-void PaContext::checkStatus(uint32_t statusFlags) {
+std::string PaContext::checkStatus(uint32_t statusFlags) {
   if (statusFlags) {
     std::string err = std::string("portAudio status - ");
     if (statusFlags & paInputUnderflow)
@@ -165,7 +189,9 @@ void PaContext::checkStatus(uint32_t statusFlags) {
 
     std::lock_guard<std::mutex> lk(m);
     mErrStr = err;
+    return err;
   }
+  return std::string("nada");
 }
 
 bool PaContext::getErrStr(std::string& errStr, bool isInput) {
@@ -198,54 +224,67 @@ bool PaContext::readPaBuffer(const void *srcBuf, uint32_t frameCount, double inT
   return true;
 }
 
-bool PaContext::fillPaBuffer(void *dstBuf, uint32_t frameCount) {
+bool PaContext::fillPaBuffer(void *dstBuf, uint32_t frameCount, double msToSkip) {
   uint32_t bytesRemaining = frameCount * mOutOptions->channelCount() * mOutOptions->sampleBits() / 8;
   bool finished = false;
   double timeStamp = 0.0;
-  fillBuffer((uint8_t *)dstBuf, bytesRemaining, timeStamp, mOutChunks, finished, /*isInput*/false);
+  uint32_t samplesToSkip = msToSkip * 48 ;
+  uint32_t bytesToSkip = samplesToSkip * mOutOptions->sampleBits()  / 8 * mOutOptions->channelCount();
+
+  fillBuffer((uint8_t *)dstBuf, bytesRemaining, timeStamp, mOutChunks, finished, /*isInput*/false, bytesToSkip);
   return !finished;
 }
 
-double PaContext::getCurTime() const  { 
+double PaContext::getCurTime() const  {
   return Pa_GetStreamTime(mStream);
 }
 
 // private
 uint32_t PaContext::fillBuffer(uint8_t *buf, uint32_t numBytes, double &timeStamp,
                                std::shared_ptr<Chunks> chunks,
-                               bool &finished, bool isInput) {
+                               bool &finished, bool isInput, uint32_t bytesToSkip) {
   uint32_t bufOff = 0;
   timeStamp = 0.0;
-  while (numBytes) {
+  while (numBytes || bytesToSkip) {
+    // Fetch the next chunk of source data if we need to; finish if no more chunks
     if (!chunks->curBuf() || (chunks->curBuf() && (chunks->curBytes() == chunks->curOffset()))) {
+      // NOTE(gnewman): Underflow could happen here if we have to wait too long
+      // for the next chunk.
       chunks->waitNext();
       if (!chunks->curBuf()) {
         printf("Finishing %s - %d bytes not available to fill the last buffer\n", isInput ? "input" : "output", numBytes);
+        // Set output buffer to zeroes
         memset(buf + bufOff, 0, numBytes);
         finished = true;
         break;
       }
     }
-    if ((0 == bufOff) && isInput) {
-      // offset the chunk timestamp by the chunk offset
-      double timeOffset = (double)chunks->curOffset() / mInOptions->channelCount() / (mInOptions->sampleBits() / 8) / mInOptions->sampleRate();
-      timeStamp = chunks->curTs() + timeOffset;
+
+    if (bytesToSkip) {
+      uint32_t actualBytesToSkip = std::min<uint32_t>(bytesToSkip, chunks->curBytes() - chunks->curOffset());
+      bytesToSkip -= actualBytesToSkip;
+      // Increase our source buffer offset
+      chunks->incOffset(actualBytesToSkip);
+    } else {
+      // Write the source to destination
+      uint32_t bytesToWrite = std::min<uint32_t>(numBytes, chunks->curBytes() - chunks->curOffset());
+      void *srcBuf = chunks->curBuf() + chunks->curOffset();
+      memcpy(buf + bufOff, srcBuf, bytesToWrite);
+
+      // Increase our source buffer offset
+      chunks->incOffset(bytesToWrite);
+
+      // Increase our destination buffer offset
+      bufOff += bytesToWrite;
+      numBytes -= bytesToWrite;
     }
-
-    uint32_t curBytes = std::min<uint32_t>(numBytes, chunks->curBytes() - chunks->curOffset());
-    void *srcBuf = chunks->curBuf() + chunks->curOffset();
-    memcpy(buf + bufOff, srcBuf, curBytes);
-
-    bufOff += curBytes;
-    chunks->incOffset(curBytes);
-    numBytes -= curBytes;
   }
 
   return bufOff;
 }
 
-void PaContext::setParams(napi_env env, bool isInput, 
-                          std::shared_ptr<AudioOptions> options, 
+void PaContext::setParams(napi_env env, bool isInput,
+                          std::shared_ptr<AudioOptions> options,
                           PaStreamParameters &params, double &sampleRate) {
   int32_t deviceID = (int32_t)options->deviceID();
   if ((deviceID >= 0) && (deviceID < Pa_GetDeviceCount()))
@@ -255,7 +294,7 @@ void PaContext::setParams(napi_env env, bool isInput,
   if (params.device == paNoDevice) {
     napi_throw_error(env, nullptr, "No default device");
     return;
-  }  
+  }
 
   printf("%s device name is %s\n", isInput?"Input":"Output", Pa_GetDeviceInfo(params.device)->name);
 
@@ -279,14 +318,14 @@ void PaContext::setParams(napi_env env, bool isInput,
     }
   }
 
-  params.suggestedLatency = isInput ? Pa_GetDeviceInfo(params.device)->defaultLowInputLatency : 
+  params.suggestedLatency = isInput ? Pa_GetDeviceInfo(params.device)->defaultLowInputLatency :
                                       Pa_GetDeviceInfo(params.device)->defaultLowOutputLatency;
   params.hostApiSpecificStreamInfo = NULL;
 
   sampleRate = (double)options->sampleRate();
 
   #ifdef __arm__
-  params.suggestedLatency = isInput ? Pa_GetDeviceInfo(params.device)->defaultHighInputLatency : 
+  params.suggestedLatency = isInput ? Pa_GetDeviceInfo(params.device)->defaultHighInputLatency :
                                       Pa_GetDeviceInfo(params.device)->defaultHighOutputLatency;
   #endif
 }
