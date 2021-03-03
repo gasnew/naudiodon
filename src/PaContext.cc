@@ -24,7 +24,6 @@ namespace streampunk {
 double timeDeltaMs = 0.0;
 double prevTime = 0.0;
 
-int hey =  0;
 int PaCallback(const void *input, void *output, unsigned long frameCount,
                const PaStreamCallbackTimeInfo *timeInfo,
                PaStreamCallbackFlags statusFlags, void *userData) {
@@ -32,9 +31,8 @@ int PaCallback(const void *input, void *output, unsigned long frameCount,
   double inTimestamp = timeInfo->inputBufferAdcTime > 0.0 ?
     timeInfo->inputBufferAdcTime :
     paContext->getCurTime() - paContext->getInLatency(); // approximation for timestamp of first sample
-  //printf("%f\n", timeInfo->outputBufferDacTime);
-  //printf("%s\n", timeInfo.toString());
-  //printf("%lu\n", frameCount);
+
+  paContext->checkStatus(statusFlags);
 
   double currentTime = paContext->getCurTime();
   double samplesMs = frameCount / 1.0 / 48.0;
@@ -45,29 +43,13 @@ int PaCallback(const void *input, void *output, unsigned long frameCount,
   if (timeDeltaMs > samplesMs * 3) {
     // We underflowed! Let's skip all of the milliseconds we were waiting for
     // more data (minus the ms we're buffering this loop iteration).
-    printf("UNDERFLOW!!!\n");
     msToSkip = timeDeltaMs - samplesMs;
     timeDeltaMs -= msToSkip;
   }
-  //if (paContext->underflowed(statusFlags)) {
-    ////msToSkip = actualMs;
-    //printf("UNDERFLOW!!!\n");
-    //printf("current time: %f\n", currentTime);
-    //printf("previous time: %f\n", prevTime);
-    //printf("Ms to skip: %f\n", msToSkip);
-    ////timeDeltaMs -= actualMs;
-  //} else {
+
   timeDeltaMs += actualMs - samplesMs;
-  //}
-  //printf("actual: %f, ideal: %f\n", actualMs, samplesMs);
   prevTime = currentTime;
 
-  //uint32_t numBytes = frameCount * mOutOptions->channelCount() * mOutOptions->sampleBits() / 8;
-  //double samplesMs = frameCount / mOutOptions->channelCount() / 48;
-  printf("%f\n", timeDeltaMs);
-
-
-  //printf("status: %s\n", paContext->checkStatus(statusFlags).c_str());
   // printf("PaCallback output %p, frameCount %d\n", output, frameCount);
   int inRetCode = paContext->hasInput() && paContext->readPaBuffer(input, frameCount, inTimestamp) ? paContinue : paComplete;
   int outRetCode = paContext->hasOutput() && paContext->fillPaBuffer(output, frameCount, msToSkip) ? paContinue : paComplete;
@@ -148,6 +130,9 @@ PaContext::PaContext(napi_env env, napi_value inOptions, napi_value outOptions)
 }
 
 void PaContext::start(napi_env env) {
+  // TODO(gnewman): Get this value from a parameter instead when we
+  // instantiate the stream so we can correct for however long it takes for
+  // Cedar to tell us to begin playback before we actually do
   prevTime = this->getCurTime();
   PaError errCode = Pa_StartStream(mStream);
   if (errCode != paNoError) {
@@ -209,12 +194,6 @@ std::string PaContext::checkStatus(uint32_t statusFlags) {
   return std::string("nada");
 }
 
-bool PaContext::underflowed(uint32_t statusFlags) {
-  if (statusFlags && (statusFlags & paOutputUnderflow))
-      return true;
-  return false;
-}
-
 bool PaContext::getErrStr(std::string& errStr, bool isInput) {
   std::lock_guard<std::mutex> lk(m);
   std::shared_ptr<AudioOptions> options = isInput ? mInOptions : mOutOptions;
@@ -251,8 +230,6 @@ bool PaContext::fillPaBuffer(void *dstBuf, uint32_t frameCount, double msToSkip)
   double timeStamp = 0.0;
   uint32_t samplesToSkip = msToSkip * 48 ;
   uint32_t bytesToSkip = samplesToSkip * mOutOptions->sampleBits()  / 8 * mOutOptions->channelCount();
-  if (bytesToSkip)
-    printf("Bytes to skip: %u\n", bytesToSkip);
 
   fillBuffer((uint8_t *)dstBuf, bytesRemaining, timeStamp, mOutChunks, finished, /*isInput*/false, bytesToSkip);
   return !finished;
@@ -271,11 +248,9 @@ uint32_t PaContext::fillBuffer(uint8_t *buf, uint32_t numBytes, double &timeStam
   while (numBytes || bytesToSkip) {
     // Fetch the next chunk of source data if we need to; finish if no more chunks
     if (!chunks->curBuf() || (chunks->curBuf() && (chunks->curBytes() == chunks->curOffset()))) {
-      printf("Fetch the next chunk...\n");
       // NOTE(gnewman): Underflow could happen here if we have to wait too long
       // for the next chunk.
       chunks->waitNext();
-      printf("Got it!\n");
       if (!chunks->curBuf()) {
         printf("Finishing %s - %d bytes not available to fill the last buffer\n", isInput ? "input" : "output", numBytes);
         // Set output buffer to zeroes

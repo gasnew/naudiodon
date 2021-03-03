@@ -45,7 +45,6 @@ public:
   void pushOutChunk(std::shared_ptr<Chunk> chunk);
 
   std::string checkStatus(uint32_t statusFlags);
-  bool underflowed(uint32_t statusFlags);
   bool getErrStr(std::string& errStr, bool isInput);
 
   void quit();
