@@ -63,17 +63,17 @@ function runAudio(fileName, sleepTime) {
       const chunkMs = chunk.length / 4 / 48;
       timeDeltaMs += currentTime - prevTimeMs - chunkMs;
       prevTimeMs = currentTime;
-      console.log('time delta:', timeDeltaMs);
+      //console.log('time delta:', timeDeltaMs);
       if (i === 20) {
         console.log('sleep-o');
         await sleep(sleepTime);
       }
 
-      console.log('before write', Date.now());
+      //console.log('before write', Date.now());
       const result = await write(chunk);
-      console.log('after write', Date.now());
+      //console.log('after write', Date.now());
       //await sleep(100);
-      console.log('result:', String(result));
+      //console.log('result:', String(result));
       if (result === false) {
         // Handle backpressure
         console.log('waito');
@@ -90,7 +90,7 @@ function runAudio(fileName, sleepTime) {
   //// Start piping data and start streaming
   rs.once('readable', async () => {
     console.log('STAHT');
-    ao.start();
+    ao.start(Date.now() - 2000);
     await pipeFileToSpeakers();
   });
 }

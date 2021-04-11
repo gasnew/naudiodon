@@ -109,7 +109,7 @@ export interface IoStream {
    * Start streaming to and/or from the device.
    * @returns void when the stream has started.
    */
-  start(): void
+  start(recordingStartedAt: number): void
   /**
    * Quit the stream. Waits to process all pending bytes.
    * The optional callback will execute when the quit has completed.

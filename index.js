@@ -76,7 +76,7 @@ function AudioIO(options) {
     });
   }
 
-  ioStream.start = () => audioIOAdon.start();
+  ioStream.start = (recordingStartedAt) => audioIOAdon.start(recordingStartedAt);
 
   ioStream.quit = async cb => {
     await audioIOAdon.quit('WAIT');
@@ -84,11 +84,10 @@ function AudioIO(options) {
       cb();
   }
 
-  ioStream.abort = cb => {
-    audioIOAdon.quit('ABORT', () => {
-      if (typeof cb === 'function')
-        cb();
-    });
+  ioStream.abort = async cb => {
+    await audioIOAdon.quit('ABORT')
+    if (typeof cb === 'function')
+      cb();
   }
 
   ioStream.on('close', async () => {

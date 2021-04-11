@@ -145,7 +145,19 @@ napi_value AudioIO::Start(napi_env env, napi_callback_info info) {
   napi_status status;
   napi_value result;
 
-  mPaContext->start(env);
+  // Check argument count
+  size_t argc = 1;
+  napi_value args[1];
+  status = napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  CHECK_STATUS;
+  if (argc != 1)
+    NAPI_THROW_ERROR("AudioIO Start expects 1 argument");
+
+  // Start context with recordingStartedAt argument
+  long long recordingStartedAt;
+  status = napi_get_value_int64(env, args[0], &recordingStartedAt);
+  CHECK_STATUS;
+  mPaContext->start(env, recordingStartedAt);
 
   status = napi_get_undefined(env, &result);
   CHECK_STATUS;
@@ -357,7 +369,7 @@ napi_value AudioIO::Quit(napi_env env, napi_callback_info info) {
   std::string stopFlagStr = stopFlag;
   if ((0 != stopFlagStr.compare("WAIT")) && (0 != stopFlagStr.compare("ABORT")))
     NAPI_THROW_ERROR("AudioIO Quit expects \'WAIT\' or \'ABORT\' as the first argument");
-  c->mStopFlag = (0 == stopFlagStr.compare("WAIT")) ? 
+  c->mStopFlag = (0 == stopFlagStr.compare("WAIT")) ?
     PaContext::eStopFlag::WAIT : PaContext::eStopFlag::ABORT;
 
   c->status = napi_create_string_utf8(env, "Quit", NAPI_AUTO_LENGTH, &resourceName);
