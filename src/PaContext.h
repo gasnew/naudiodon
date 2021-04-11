@@ -38,7 +38,7 @@ public:
   bool hasInput() { return mInOptions ? true : false; }
   bool hasOutput() { return mOutOptions ? true : false; }
 
-  void start(napi_env env);
+  void start(napi_env env, long long recordingStartedAt);
   void stop(eStopFlag flag);
 
   std::shared_ptr<Chunk> pullInChunk(uint32_t numBytes, bool &finished);

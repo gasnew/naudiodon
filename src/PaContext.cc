@@ -18,11 +18,13 @@
 #include "Chunks.h"
 #include <portaudio.h>
 #include <thread>
+#include <chrono>
 
+using namespace std::chrono;
 namespace streampunk {
 
 double timeDeltaMs = 0.0;
-double prevTime = 0.0;
+long prevTimeMs = 0;
 
 int PaCallback(const void *input, void *output, unsigned long frameCount,
                const PaStreamCallbackTimeInfo *timeInfo,
@@ -34,9 +36,11 @@ int PaCallback(const void *input, void *output, unsigned long frameCount,
 
   paContext->checkStatus(statusFlags);
 
-  double currentTime = paContext->getCurTime();
+  long long currentTimeMs = duration_cast< milliseconds >(
+      system_clock::now().time_since_epoch()
+  ).count();
   double samplesMs = frameCount / 1.0 / 48.0;
-  double actualMs = (currentTime - prevTime) * 1000.0;
+  long actualMs = currentTimeMs - prevTimeMs;
   double msToSkip = 0;
   // We cannot rely on the underflow flag--sometimes it is not triggered
   // correctly :(
@@ -48,7 +52,7 @@ int PaCallback(const void *input, void *output, unsigned long frameCount,
   }
 
   timeDeltaMs += actualMs - samplesMs;
-  prevTime = currentTime;
+  prevTimeMs = currentTimeMs;
 
   // printf("PaCallback output %p, frameCount %d\n", output, frameCount);
   int inRetCode = paContext->hasInput() && paContext->readPaBuffer(input, frameCount, inTimestamp) ? paContinue : paComplete;
@@ -129,11 +133,10 @@ PaContext::PaContext(napi_env env, napi_value inOptions, napi_value outOptions)
   mInLatency = streamInfo->inputLatency;
 }
 
-void PaContext::start(napi_env env) {
-  // TODO(gnewman): Get this value from a parameter instead when we
-  // instantiate the stream so we can correct for however long it takes for
-  // Cedar to tell us to begin playback before we actually do
-  prevTime = this->getCurTime();
+void PaContext::start(napi_env env, long long recordingStartedAt) {
+  // Set prevTimeMs to when the recording started, so we can skip any bytes we
+  // missed playing while playback was initializing.
+  prevTimeMs = recordingStartedAt;
   PaError errCode = Pa_StartStream(mStream);
   if (errCode != paNoError) {
     std::string err = std::string("Could not start stream: ") + Pa_GetErrorText(errCode);
