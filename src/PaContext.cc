@@ -48,7 +48,10 @@ int PaCallback(const void *input, void *output, unsigned long frameCount,
     // We underflowed! Let's skip all of the milliseconds we were waiting for
     // more data (minus the ms we're buffering this loop iteration).
     msToSkip = timeDeltaMs - samplesMs;
-    timeDeltaMs -= msToSkip;
+    printf("skipping %f ms!\n", msToSkip);
+    timeDeltaMs = 0;
+  } else {
+    timeDeltaMs += actualMs - samplesMs;
   }
 
   timeDeltaMs += actualMs - samplesMs;
